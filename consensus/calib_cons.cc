@@ -164,8 +164,8 @@ void parse_flags(int argc, char *argv[]){
 }
 
 void process_clusters(const std::vector<std::string>& read_to_sequence, const std::vector<std::vector<read_id_t> >& cluster_to_reads, std::string o_filename_prefix, size_t thread_id) {
-    std::ofstream ofastq(o_filename_prefix + ".fastq" + std::to_string(thread_id));
-    std::ofstream omsa(o_filename_prefix + ".msa" + std::to_string(thread_id));
+    std::ofstream ofastq(o_filename_prefix + "fastq" + std::to_string(thread_id));
+    std::ofstream omsa(o_filename_prefix + "msa" + std::to_string(thread_id));
     for (cluster_id_t cid = thread_id; cid < cluster_to_reads.size(); cid+=thread_count) {
         if (cluster_to_reads[cid].size() < min_reads_per_cluster) {
             continue;
@@ -302,17 +302,17 @@ void run_consensus(){
         for (size_t thread_id = 0; thread_id < thread_count; thread_id++) {
             threads[thread_id] = std::thread(process_clusters, std::ref(read_to_sequence), std::ref(cluster_to_reads), o_filename_prefix, thread_id);
         }
-        std::ofstream ofastq(o_filename_prefix + ".fastq");
-        std::ofstream omsa(o_filename_prefix + ".msa");
+        std::ofstream ofastq(o_filename_prefix + "fastq");
+        std::ofstream omsa(o_filename_prefix + "msa");
         for (size_t thread_id = 0; thread_id < thread_count; thread_id++) {
             threads[thread_id].join();
 
-            std::string fastq_t_filename = o_filename_prefix + ".fastq" + std::to_string(thread_id);
+            std::string fastq_t_filename = o_filename_prefix + "fastq" + std::to_string(thread_id);
             std::ifstream ofastq_t(fastq_t_filename);
             ofastq << ofastq_t.rdbuf();
             remove(fastq_t_filename.c_str());
 
-            std::string msa_t_filename = o_filename_prefix + ".msa" + std::to_string(thread_id);
+            std::string msa_t_filename = o_filename_prefix + "msa" + std::to_string(thread_id);
             std::ifstream omsa_t(msa_t_filename);
             omsa << omsa_t.rdbuf();
             remove(msa_t_filename.c_str());
