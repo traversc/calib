@@ -4,17 +4,15 @@
 
 #include "extract.h"
 #include "global.h"
-#include "kseq.h"
-#include <zlib.h>
 #include <algorithm>
+#include <exception>
+#include <utility>
 
 // Debug includes
 #include <sstream>
 #include <iomanip>
 
 using namespace std;
-
-KSEQ_INIT(gzFile, gzread)
 
 #define ASCII_SIZE 128
 #define BYTE_SIZE 8
@@ -73,131 +71,100 @@ void extract_barcodes_and_minimizers() {
     for (int i = 0; i < ASCII_SIZE; i++) {
         encode[i] = (minimizer_t) -1;
     }
-    encode['A'] = 0x0;
-    encode['C'] = 0x1;
-    encode['G'] = 0x2;
-    encode['T'] = 0x3;
-    encode['a'] = 0x0;
-    encode['c'] = 0x1;
-    encode['g'] = 0x2;
-    encode['t'] = 0x3;
-
-    ifstream fastq1;
-    ifstream fastq2;
-    gzFile fastq1_gz = Z_NULL;
-    gzFile fastq2_gz = Z_NULL;
-    kseq_t* fastq1_gz_reader = NULL;
-    kseq_t* fastq2_gz_reader = NULL;
-    if (!gz_input) {
-        fastq1.open (input_1);
-        fastq2.open (input_2);
-    } else {
-        fastq1_gz = gzopen(input_1.c_str(), "r");
-        fastq2_gz = gzopen(input_2.c_str(), "r");
-        fastq1_gz_reader = kseq_init(fastq1_gz);
-        fastq2_gz_reader = kseq_init(fastq2_gz);
-    }
+    auto set_encode = [&](char base, minimizer_t value) {
+        encode[static_cast<unsigned char>(base)] = value;
+    };
+    set_encode('A', 0x0);
+    set_encode('C', 0x1);
+    set_encode('G', 0x2);
+    set_encode('T', 0x3);
+    set_encode('a', 0x0);
+    set_encode('c', 0x1);
+    set_encode('g', 0x2);
+    set_encode('t', 0x3);
 
     read_count = 0;
     if (!silent && print_mem){
         cout << "Memory before reading FASTQ:\n\t" << get_memory_use() << "MB\n";
     }
     // Processing FASTQ files one read at a time
-    string name_1, sequence_1, name_2, sequence_2, trash;
-    while (true) {
-        if (!gz_input) {
-            bool valid_txt_line = true;
-            valid_txt_line = valid_txt_line && getline(fastq1, name_1);
-            valid_txt_line = valid_txt_line && getline(fastq1, sequence_1);
-            valid_txt_line = valid_txt_line && getline(fastq1, trash);
-            valid_txt_line = valid_txt_line && getline(fastq1, trash);
-            valid_txt_line = valid_txt_line && getline(fastq2, name_2);
-            valid_txt_line = valid_txt_line && getline(fastq2, sequence_2);
-            valid_txt_line = valid_txt_line && getline(fastq2, trash);
-            valid_txt_line = valid_txt_line && getline(fastq2, trash);
-            if (!valid_txt_line) {
+    FastqRecord record_1;
+    FastqRecord record_2;
+    try {
+        FastqReader fastq_reader_1(input_1, input_compression);
+        FastqReader fastq_reader_2(input_2, input_compression);
+
+        while (true) {
+            bool has_first = fastq_reader_1.readRecord(record_1);
+            bool has_second = fastq_reader_2.readRecord(record_2);
+            if (!has_first || !has_second) {
+                if (has_first != has_second) {
+                    cout << "Input FASTQ files have different numbers of reads.\n";
+                    exit(-1);
+                }
                 break;
             }
-        } else {
-            int valid_gz_line = 0;
-            valid_gz_line = kseq_read(fastq1_gz_reader);
-            if (valid_gz_line < 0) {
-                break;
+
+            string& sequence_1 = record_1.sequence;
+            string& sequence_2 = record_2.sequence;
+
+            int s1_length = static_cast<int>(sequence_1.size());
+            int s2_length = static_cast<int>(sequence_2.size());
+
+            NodePtr current_node_ptr = new Node();
+            // Extracting the barcode from the start of both mates
+            if (s1_length >= barcode_length_1 && s2_length >= barcode_length_2) {
+                current_node_ptr->barcode =
+                    sequence_1.substr(0, barcode_length_1) +
+                    sequence_2.substr(0, barcode_length_2);
+            } else {
+                current_node_ptr->barcode = string (barcode_length_1 + barcode_length_2, 'N');
             }
-            valid_gz_line = kseq_read(fastq2_gz_reader);
-            if (valid_gz_line < 0) {
-                break;
+
+            s1_length -= barcode_length_1;
+            s2_length -= barcode_length_2;
+
+            s1_length -= ignored_sequence_prefix_length;
+            s2_length -= ignored_sequence_prefix_length;
+
+            // Splitting the remaining sequence into ~ equally sized segments, and extracting minimizers from each
+            int s1_seg_length = minimizer_count > 0 ? s1_length / minimizer_count : 0;
+            if (s1_seg_length >= kmer_size) {
+                int start = barcode_length_1 + ignored_sequence_prefix_length;
+                for (int i = 0; i < minimizer_count; i++) {
+                    current_node_ptr->minimizers[i] = minimizer(sequence_1, start, s1_seg_length);
+                    start += s1_seg_length;
+                }
+            } else {
+                for (int i = 0; i < minimizer_count; i++) {
+                    current_node_ptr->minimizers[i] = --invalid_kmer;
+                }
             }
-            name_1     = "@";
-            name_1     += fastq1_gz_reader->name.s;
-            sequence_1 = fastq1_gz_reader->seq.s;
-            name_2     = "@";
-            name_2     += fastq2_gz_reader->name.s;
-            sequence_2 = fastq2_gz_reader->seq.s;
+
+            int s2_seg_length = minimizer_count > 0 ? s2_length / minimizer_count : 0;
+            if (s2_seg_length >= kmer_size) {
+                int start = barcode_length_2 + ignored_sequence_prefix_length;
+                for (int i = minimizer_count; i < minimizer_count*2; i++) {
+                    current_node_ptr->minimizers[i] = minimizer(sequence_2, start, s2_seg_length);
+                    start += s2_seg_length;
+                }
+            } else {
+                for (int i = minimizer_count; i < minimizer_count*2; i++) {
+                    current_node_ptr->minimizers[i] = --invalid_kmer;
+                }
+            }
+
+            if (node_to_read_map.find(current_node_ptr) != node_to_read_map.end()) {
+                node_to_read_map[current_node_ptr].push_back(read_count);
+                delete current_node_ptr;
+            } else {
+                node_to_read_map.emplace(current_node_ptr, vector<read_id_t>{read_count});
+            }
+            read_count++;
         }
-
-        int s1_length = sequence_1.size();
-        int s2_length = sequence_2.size();
-
-        NodePtr current_node_ptr = new Node();
-        // Extracting the barcode from the start of both mates
-        if (s1_length >= barcode_length_1 && s2_length >= barcode_length_2) {
-            current_node_ptr->barcode =
-                sequence_1.substr(0, barcode_length_1) +
-                sequence_2.substr(0, barcode_length_2);
-        } else {
-            current_node_ptr->barcode = string (barcode_length_1 + barcode_length_2, 'N');
-        }
-
-        s1_length -= barcode_length_1;
-        s2_length -= barcode_length_2;
-
-        s1_length -= ignored_sequence_prefix_length;
-        s2_length -= ignored_sequence_prefix_length;
-
-        // Splitting the remaining sequence into ~ equally sized segments, and extracting minimizers from each
-        int s1_seg_length = s1_length / minimizer_count;
-        if (s1_seg_length >= kmer_size) {
-            int start = barcode_length_1 + ignored_sequence_prefix_length;
-            for (int i = 0; i < minimizer_count; i++) {
-                current_node_ptr->minimizers[i] = minimizer(sequence_1, start, s1_seg_length);
-                start += s1_seg_length;
-            }
-        } else {
-            for (int i = 0; i < minimizer_count; i++) {
-                current_node_ptr->minimizers[i] = --invalid_kmer;
-            }
-        }
-
-        int s2_seg_length = s2_length / minimizer_count;
-        if (s2_seg_length >= kmer_size) {
-            int start = barcode_length_2 + ignored_sequence_prefix_length;
-            for (int i = minimizer_count; i < minimizer_count*2; i++) {
-                current_node_ptr->minimizers[i] = minimizer(sequence_2, start, s2_seg_length);
-                start += s2_seg_length;
-            }
-        } else {
-            for (int i = minimizer_count; i < minimizer_count*2; i++) {
-                current_node_ptr->minimizers[i] = --invalid_kmer;
-            }
-        }
-
-        if (node_to_read_map.find(current_node_ptr) != node_to_read_map.end()) {
-            node_to_read_map[current_node_ptr].push_back(read_count);
-            delete current_node_ptr;
-        } else {
-            node_to_read_map.emplace(current_node_ptr, vector<read_id_t>{read_count});
-        }
-        read_count++;
-    }
-    if (!gz_input) {
-        fastq1.close();
-        fastq2.close();
-    } else {
-        kseq_destroy(fastq1_gz_reader);
-        gzclose(fastq1_gz);
-        kseq_destroy(fastq2_gz_reader);
-        gzclose(fastq2_gz);
+    } catch (const std::exception& ex) {
+        cout << ex.what() << "\n";
+        exit(-1);
     }
     if (!silent && print_mem){
         cout << "Memory right after reading FASTQ:\n\t" << get_memory_use() << "MB\n";
@@ -214,7 +181,7 @@ void extract_barcodes_and_minimizers() {
     barcode_to_node_id_unordered_map barcode_to_node_map;
     for (auto kv : node_to_read_map) {
         NodePtr current_node_ptr = kv.first;
-        (*node_to_minimizers_ptr).emplace_back(move(current_node_ptr->minimizers));
+        (*node_to_minimizers_ptr).emplace_back(std::move(current_node_ptr->minimizers));
         barcode_to_node_map[current_node_ptr->barcode].push_back(node_count);
         delete current_node_ptr;
         for (read_id_t rid : kv.second) {
@@ -238,9 +205,9 @@ void extract_barcodes_and_minimizers() {
     }
 
     for (auto kv : barcode_to_node_map) {
-        (*barcodes_ptr).emplace_back(move(kv.first));
+        (*barcodes_ptr).emplace_back(std::move(kv.first));
         sort(kv.second.begin(), kv.second.end());
-        (*barcode_to_nodes_vector_ptr).emplace_back(move(kv.second));
+        (*barcode_to_nodes_vector_ptr).emplace_back(std::move(kv.second));
     }
     if (!silent && print_mem){
         cout << "Memory after filling barcodes & barcode_to_nodes_vector:\n\t" << get_memory_use() << "MB\n";

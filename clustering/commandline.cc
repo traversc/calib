@@ -3,10 +3,9 @@
 //
 
 #include "commandline.h"
-#include "kseq.h"
-#include <zlib.h>
+#include "fastq_reader.h"
 
-KSEQ_INIT(gzFile, gzread)
+#include <exception>
 
 using namespace std;
 
@@ -20,7 +19,7 @@ string output_prefix = "";
 bool print_mem = false;
 bool silent = false;
 bool sort_clusters = false;
-bool gz_input = false;
+CompressionType input_compression = CompressionType::AUTO;
 int barcode_length_1 = -1;
 int barcode_length_2 = -1;
 int ignored_sequence_prefix_length = -1;
@@ -32,6 +31,17 @@ int thread_count = -1;
 
 void parse_flags(int argc, char *argv[]){
     int barcode_length = -1;
+    auto set_compression = [&](CompressionType type, const string& flag) {
+        if (input_compression != CompressionType::AUTO && input_compression != type) {
+            cout << "Conflicting compression parameter. Already set to "
+                 << compressionTypeName(input_compression)
+                 << ", cannot change to " << compressionTypeName(type)
+                 << " via " << flag << "\n";
+            print_help();
+            exit(-1);
+        }
+        input_compression = type;
+    };
     for (int i = 1; i < argc; i++) {
         string current_param(argv[i]);
         if (current_param == "-h" || current_param == "--help") {
@@ -65,8 +75,16 @@ void parse_flags(int argc, char *argv[]){
             print_mem = true;
             continue;
         }
-        if ((gz_input == false) && (current_param == "-g" || current_param == "--gzip-input")) {
-            gz_input = true;
+        if (current_param == "-g" || current_param == "--gzip-input") {
+            set_compression(CompressionType::GZIP, current_param);
+            continue;
+        }
+        if (current_param == "--zstd-input") {
+            set_compression(CompressionType::ZSTD, current_param);
+            continue;
+        }
+        if (current_param == "--plain-input") {
+            set_compression(CompressionType::PLAIN, current_param);
             continue;
         }
         if ((barcode_length == -1) && (barcode_length_1 == -1) && (barcode_length_2 == -1) && (current_param == "-l" || current_param == "--barcode-length")) {
@@ -130,6 +148,21 @@ void parse_flags(int argc, char *argv[]){
         print_help();
         exit(-1);
     }
+
+    CompressionType forward_type = resolveCompression(input_compression, input_1);
+    CompressionType reverse_type = resolveCompression(input_compression, input_2);
+    if (forward_type != reverse_type) {
+        cout << "Forward and reverse FASTQ files appear to use different compression formats ("
+             << compressionTypeName(forward_type) << " vs. "
+             << compressionTypeName(reverse_type)
+             << "). Please supply matching files or override with --plain-input/--gzip-input/--zstd-input.\n";
+        print_help();
+        exit(-1);
+    }
+    input_compression = forward_type;
+    if (!silent) {
+        cout << "Using " << compressionTypeName(input_compression) << " compression for input FASTQ files\n";
+    }
     if (ignored_sequence_prefix_length == -1) {
         ignored_sequence_prefix_length = 0;
     }
@@ -138,55 +171,25 @@ void parse_flags(int argc, char *argv[]){
     }
     if (error_tolerance == -1 && kmer_size == -1 &&  minimizer_count == -1 && minimizer_threshold == -1) {
         cout << "No error or minimizer parameters passed. Selecting parameters based on barcode and inferred read length\n";
-        ifstream fastq1;
-        gzFile fastq1_gz = NULL;
-        kseq_t* fastq1_gz_reader = NULL;
-        if (!gz_input) {
-            fastq1.open (input_1);
-            if (!fastq1.is_open()) {
-                cout << "Could not open file " << input_1 << "\n";
-                exit(-1);
-            }
-        } else {
-            fastq1_gz = gzopen(input_1.c_str(), "r");
-            if (fastq1_gz == Z_NULL) {
-                cout << "Could not open file " << input_1 << "\n";
-                exit(-1);
-            }
-            fastq1_gz_reader = kseq_init(fastq1_gz);
-        }
-        string sequence_1, trash;
         size_t sample_read_count = 0;
         size_t total_reads_size = 0;
-        while (sample_read_count < READ_SIZE_SAMPLE_SIZE) {
-            if (!gz_input) {
-                bool valid_line = true;
-                valid_line = valid_line && getline(fastq1, trash);
-                valid_line = valid_line && getline(fastq1, sequence_1);
-                valid_line = valid_line && getline(fastq1, trash);
-                valid_line = valid_line && getline(fastq1, trash);
-                if (!valid_line) {
-                    break;
-                }
-            } else {
-                int valid_gz_line = 0;
-                valid_gz_line = kseq_read(fastq1_gz_reader);
-                if (valid_gz_line < 0) {
-                    break;
-                }
-                sequence_1 = fastq1_gz_reader->seq.s;
+        try {
+            FastqReader sample_reader(input_1, input_compression);
+            FastqRecord record;
+            while (sample_read_count < READ_SIZE_SAMPLE_SIZE && sample_reader.readRecord(record)) {
+                total_reads_size += record.sequence.size();
+                sample_read_count++;
             }
-            total_reads_size+=sequence_1.size();
-            sample_read_count++;
+        } catch (const std::exception& ex) {
+            cout << ex.what() << "\n";
+            exit(-1);
         }
-        if (!gz_input) {
-            fastq1.close();
-        } else {
-            kseq_destroy(fastq1_gz_reader);
-            gzclose(fastq1_gz);
+        if (sample_read_count == 0) {
+            cout << "Could not read any FASTQ records from " << input_1 << "\n";
+            exit(-1);
         }
 
-        size_t mean_read_size = total_reads_size/sample_read_count;
+        size_t mean_read_size = total_reads_size / sample_read_count;
         int barcode_length = (barcode_length_1 + barcode_length_2)/2;
         if (barcode_length >= 1 && barcode_length <= 6) {
             if (mean_read_size >= 61 && mean_read_size <= 100) {
@@ -278,6 +281,7 @@ void print_flags(){
     cout << "\tinput_1:\t" << input_1 << "\n";
     cout << "\tinput_2:\t" << input_2 << "\n";
     cout << "\toutput_prefix:\t" << output_prefix << "\n";
+    cout << "\tcompression:\t" << compressionTypeName(input_compression) << "\n";
     cout << "\tbarcode_length_1:\t" << barcode_length_1 << "\n";
     cout << "\tbarcode_length_2:\t" << barcode_length_2 << "\n";
     cout << "\tignored_sequence_prefix_length:\t" << ignored_sequence_prefix_length << "\n";
@@ -301,7 +305,9 @@ void print_help(){
     cout << "\t-s    --silent                        \t(type: no value; default: unset)\n";
     cout << "\t-q    --sort                          \t(type: no value; default:  unset)\n";
     cout << "\t-z    --print-mem                     \t(type: no value; default:  unset)\n";
-    cout << "\t-g    --gzip-input                    \t(type: no value; default:  unset)\n";
+    cout << "\t-g    --gzip-input                    \t(type: no value; forces gzip compression)\n";
+    cout << "\t      --zstd-input                    \t(type: no value; forces zstd compression)\n";
+    cout << "\t      --plain-input                   \t(type: no value; forces plain text input; default: auto-detect by extension)\n";
     cout << "\t-l    --barcode-length                \t(type: int;      REQUIRED paramter unless -l1 and -l2 are provided)\n";
     cout << "\t-l1   --barcode-length-1              \t(type: int;      REQUIRED paramter unless -l is provided)\n";
     cout << "\t-l2   --barcode-length-2              \t(type: int;      REQUIRED paramter unless -l is provided)\n";

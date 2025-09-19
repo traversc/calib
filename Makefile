@@ -13,12 +13,25 @@ simulating_path?=$(current_dir)simulating/
 SHELL=/bin/bash -o pipefail
 
 CXX?=g++
-CXXFLAGS=-std=c++11 -pthread -I clustering/ -lz -Wall -Wextra ${LDFLAGS} ${LIBS}
+CC?=gcc
+CXXFLAGS=-std=c++11 -pthread -Iclustering/ -Wall -Wextra
+CFLAGS?=-O2 -Wall
 SOURCES:=$(wildcard clustering/*.cc)
 OBJECTS:=$(SOURCES:.cc=.o)
 EXECUTABLE=calib
 DBG_OBJECTS:=$(SOURCES:.cc=.dbg)
 DEBUGGABLE=$(EXECUTABLE)_dbg
+ZSTD_REPO?=https://github.com/facebook/zstd.git
+ZSTD_TAG?=v1.5.7
+ZSTD_DIR?=$(current_dir)vendor/zstd
+ZSTD_LIB?=$(ZSTD_DIR)/lib/libzstd.a
+ZSTD_INCLUDE?=$(ZSTD_DIR)/lib
+LDLIBS:=$(filter-out -lz -lzstd,$(LDLIBS))
+LDLIBS+=-lzstd
+ZLIB_LIB?=-lz
+LDFLAGS+=-L$(ZSTD_DIR)/lib
+CXXFLAGS+=-I$(ZSTD_INCLUDE)
+export ZSTD_DIR ZSTD_LIB ZSTD_INCLUDE LDLIBS ZLIB_LIB LDFLAGS CXXFLAGS
 
 python3?= PYTHONHASHSEED=0 python3
 art_illumina?=art_illumina
@@ -111,18 +124,88 @@ output_accuracy_results?=$(calib_output_prefix)accuracy
 
 .DELETE_ON_ERROR:
 .SECONDARY:
-.PHONY: help clean simulate_clean simulate cluster accuracy
-$(EXECUTABLE): $(EXECUTABLE).cc $(OBJECTS) Makefile
-	$(CXX) $(OBJECTS) -O2 $< $(CXXFLAGS) -o $@
+.PHONY: help clean simulate_clean simulate cluster accuracy all test
 
-$(DEBUGGABLE): $(EXECUTABLE).cc $(DBG_OBJECTS) Makefile
-	$(CXX) $(DBG_OBJECTS) -g -O0 $< $(CXXFLAGS) -o $@ -DGITINFO="\"$(GITINFO)\""
+all: $(EXECUTABLE) consensus/calib_cons
+
+consensus/calib_cons:
+	$(MAKE) -C consensus calib_cons
+
+test: all
+	@set -euo pipefail; \
+	command -v gzip >/dev/null 2>&1 || { echo "gzip is required for 'make test'"; exit 1; }; \
+	command -v zstd >/dev/null 2>&1 || { echo "zstd is required for 'make test'"; exit 1; }; \
+	tmp="$$(mktemp -d 2>/dev/null || mktemp -d -t calib-test)"; \
+	cleanup() { rm -rf "$$tmp"; }; \
+	trap cleanup EXIT; \
+	printf '@read1/1\nAACCGGTT\n+\nFFFFFFFF\n@read2/1\nAACCGGTA\n+\nFFFFFFFF\n' > "$$tmp/reads_R1.fastq"; \
+	printf '@read1/2\nTTGGCCAA\n+\nFFFFFFFF\n@read2/2\nTTGGCCAT\n+\nFFFFFFFF\n' > "$$tmp/reads_R2.fastq"; \
+	gzip -c "$$tmp/reads_R1.fastq" > "$$tmp/reads_R1.fastq.gz"; \
+	gzip -c "$$tmp/reads_R2.fastq" > "$$tmp/reads_R2.fastq.gz"; \
+	zstd --quiet -f -o "$$tmp/reads_R1.fastq.zst" "$$tmp/reads_R1.fastq"; \
+	zstd --quiet -f -o "$$tmp/reads_R2.fastq.zst" "$$tmp/reads_R2.fastq"; \
+	run_calib() { \
+	  name="$$1"; shift; \
+	  in1="$$1"; in2="$$2"; shift 2; \
+	  ./calib \
+	    --input-forward "$$in1" \
+	    --input-reverse "$$in2" \
+	    --output-prefix "$$tmp/$$name." \
+	    --barcode-length 1 \
+	    --ignored-sequence-prefix-length 0 \
+	    --minimizer-count 1 \
+	    --kmer-size 4 \
+	    --error-tolerance 1 \
+	    --minimizer-threshold 1 \
+	    --threads 1 \
+	    --silent "$$@" >/dev/null; \
+	}; \
+	run_calib plain "$$tmp/reads_R1.fastq" "$$tmp/reads_R2.fastq"; \
+	run_calib gz_auto "$$tmp/reads_R1.fastq.gz" "$$tmp/reads_R2.fastq.gz"; \
+	run_calib gz_flag "$$tmp/reads_R1.fastq.gz" "$$tmp/reads_R2.fastq.gz" --gzip-input; \
+	run_calib zst_auto "$$tmp/reads_R1.fastq.zst" "$$tmp/reads_R2.fastq.zst"; \
+	run_calib zst_flag "$$tmp/reads_R1.fastq.zst" "$$tmp/reads_R2.fastq.zst" --zstd-input; \
+	for variant in gz_auto gz_flag zst_auto zst_flag; do \
+	  cmp -s "$$tmp/plain.cluster" "$$tmp/$${variant}.cluster" || { echo "calib output mismatch for $$variant"; exit 1; }; \
+	done; \
+	run_cons() { \
+	  name="$$1"; shift; \
+	  in1="$$1"; in2="$$2"; shift 2; \
+	  ./consensus/calib_cons \
+	    -c "$$tmp/plain.cluster" \
+	    -q "$$in1" "$$in2" \
+	    -o "$$tmp/$$name.R1" "$$tmp/$$name.R2" \
+	    -t 1 "$$@" >/dev/null; \
+	}; \
+	run_cons plain "$$tmp/reads_R1.fastq" "$$tmp/reads_R2.fastq"; \
+	run_cons gz_flag "$$tmp/reads_R1.fastq.gz" "$$tmp/reads_R2.fastq.gz" --gzip-input; \
+	run_cons zst_flag "$$tmp/reads_R1.fastq.zst" "$$tmp/reads_R2.fastq.zst" --zstd-input; \
+	for variant in gz_flag zst_flag; do \
+	  cmp -s "$$tmp/plain.R1.fastq" "$$tmp/$${variant}.R1.fastq" || { echo "calib_cons R1 consensus mismatch for $$variant"; exit 1; }; \
+	  cmp -s "$$tmp/plain.R2.fastq" "$$tmp/$${variant}.R2.fastq" || { echo "calib_cons R2 consensus mismatch for $$variant"; exit 1; }; \
+	done; \
+	echo "All compression format checks passed"
+$(EXECUTABLE): $(EXECUTABLE).cc $(OBJECTS) $(ZSTD_LIB) Makefile
+	$(CXX) $(OBJECTS) -O2 $< $(CXXFLAGS) $(LDFLAGS) $(LDLIBS) $(ZLIB_LIB) -o $@
+
+$(DEBUGGABLE): $(EXECUTABLE).cc $(DBG_OBJECTS) $(ZSTD_LIB) Makefile
+	$(CXX) $(DBG_OBJECTS) -g -O0 $< $(CXXFLAGS) $(LDFLAGS) $(LDLIBS) $(ZLIB_LIB) -o $@ -DGITINFO="\"$(GITINFO)\""
 
 %.o: %.cc Makefile
 	$(CXX) $(CXXFLAGS) -O2 -c $< -o $@
 
 %.dbg: %.cc Makefile
 	$(CXX) $(CXXFLAGS) -g -O0 -c $< -o $@
+
+$(ZSTD_LIB):
+	@echo "Preparing Zstandard library"
+	@if [ ! -d "$(ZSTD_DIR)" ]; then \
+		echo "Cloning Zstandard ($(ZSTD_TAG))"; \
+		git clone --depth 1 --branch "$(ZSTD_TAG)" $(ZSTD_REPO) "$(ZSTD_DIR)"; \
+	else \
+		echo "Zstandard already present, skipping fetch"; \
+	fi
+	$(MAKE) -C "$(ZSTD_DIR)" lib
 
 help:
 	@echo 'calib: Clustering without alignment using LSH and MinHashing of barcoded reads'
@@ -302,3 +385,7 @@ accuracy: $(cluster_file) $(true_cluster)
 
 clean:
 	rm -f $(EXECUTABLE) $(DEBUGGABLE) $(OBJECTS) $(SOURCES:.cc=.h.gch) $(DBG_OBJECTS)
+	if [ -d "$(ZSTD_DIR)" ]; then $(MAKE) -C "$(ZSTD_DIR)" clean >/dev/null || true; fi
+
+.PHONY: zstd
+zstd: $(ZSTD_LIB)

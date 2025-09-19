@@ -8,6 +8,9 @@
 #include <thread>
 #include <functional>
 #include <locale>
+#include <exception>
+
+#include "../clustering/fastq_reader.h"
 
 #define ALIGNMENT_TYPE_GLOBAL 1
 #define SCORE_M 5
@@ -22,6 +25,7 @@ int max_reads_per_cluster = 1000;
 std::string cluster_filename = "";
 std::vector<std::string> fastq_filenames;
 std::vector<std::string> output_filenames;
+CompressionType fastq_compression = CompressionType::AUTO;
 typedef uint32_t cluster_id_t;
 typedef uint32_t read_id_t;
 
@@ -47,10 +51,24 @@ void print_help(){
     std::cout << "                                    default: 2)\n";
     std::cout << "  -x  --max-reads-per-cluster    (positive integer;\n";
     std::cout << "                                    default: 1000)\n";
+    std::cout << "  -g  --gzip-input               (type: no value; forces gzip input)\n";
+    std::cout << "      --zstd-input               (type: no value; forces zstd input)\n";
+    std::cout << "      --plain-input              (type: no value; forces plain text input; default: auto-detect by extension)\n";
     std::cout << "  -h  --help\n";
 }
 
 void parse_flags(int argc, char *argv[]){
+    auto set_compression = [&](CompressionType type, const std::string& flag) {
+        if (fastq_compression != CompressionType::AUTO && fastq_compression != type) {
+            std::cout << "Conflicting compression parameter. Already set to "
+                      << compressionTypeName(fastq_compression)
+                      << ", cannot change to " << compressionTypeName(type)
+                      << " via " << flag << "\n";
+            print_help();
+            exit(-1);
+        }
+        fastq_compression = type;
+    };
     for (int i = 1; i < argc; i++) {
         std::string current_param(argv[i]);
         if (current_param == "-h" || current_param == "--help") {
@@ -99,6 +117,18 @@ void parse_flags(int argc, char *argv[]){
                 }
                 output_filenames.push_back(output_filename);
             }
+            continue;
+        }
+        if (current_param == "-g" || current_param == "--gzip-input") {
+            set_compression(CompressionType::GZIP, current_param);
+            continue;
+        }
+        if (current_param == "--zstd-input") {
+            set_compression(CompressionType::ZSTD, current_param);
+            continue;
+        }
+        if (current_param == "--plain-input") {
+            set_compression(CompressionType::PLAIN, current_param);
             continue;
         }
         std::cout << "Unrecognized parameter, " << argv[i] << ", was passed.\n";
@@ -251,17 +281,22 @@ void run_consensus(){
         std::string o_filename_prefix = output_filenames[i];
 
         std::vector<std::string> read_to_sequence(read_count);
-        std::ifstream ifastq;
-        ifastq.open(ifastq_filename);
         read_id_t rid = 0;
-        while (getline(ifastq, line_buffer)) {
-            if (read_to_sequence.size() <= rid) {
-                read_to_sequence.resize(rid+1);
+        try {
+            CompressionType resolved_type = resolveCompression(fastq_compression, ifastq_filename);
+            std::cout << "Detected " << compressionTypeName(resolved_type) << " compression" << '\n';
+            FastqReader fastq_reader(ifastq_filename, resolved_type);
+            FastqRecord record;
+            while (fastq_reader.readRecord(record)) {
+                if (read_to_sequence.size() <= rid) {
+                    read_to_sequence.resize(rid + 1);
+                }
+                read_to_sequence[rid] = record.sequence;
+                rid++;
             }
-            getline(ifastq, read_to_sequence[rid]);
-            getline(ifastq, line_buffer);
-            getline(ifastq, line_buffer);
-            rid++;
+        } catch (const std::exception& ex) {
+            std::cout << ex.what() << '\n';
+            exit(-1);
         }
         std::vector<std::thread> threads(thread_count);
         for (size_t thread_id = 0; thread_id < thread_count; thread_id++) {

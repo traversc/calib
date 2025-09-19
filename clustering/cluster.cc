@@ -3,10 +3,8 @@
 //
 
 #include "cluster.h"
-#include "kseq.h"
 
 // #include <pthread.h>
-#include <zlib.h>
 #include <thread>
 #include <mutex>
 #include <stack>
@@ -14,11 +12,13 @@
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
+#include <fstream>
+#include <exception>
+#include <iterator>
+#include <utility>
 // Debug includes
 #include <sstream>
 #include <iomanip>
-
-KSEQ_INIT(gzFile, gzread)
 
 using namespace std;
 
@@ -94,7 +94,7 @@ void process_lsh(masked_barcode_to_barcode_id_unordered_map* lsh_ptr,
                         good_neighbors.begin(), good_neighbors.end(),
                         back_inserter(result)
                     );
-                    (*local_graph_ptr)[node] = move(result);
+                    (*local_graph_ptr)[node] = std::move(result);
                 }
             }
         }
@@ -115,7 +115,7 @@ void process_identical_barcode_nodes(uint8_t barcode_id_remainder) {
                       good_neighbors.begin(), good_neighbors.end(),
                       back_inserter(result)
                       );
-            (*graph_ptr)[node] = move(result);
+        (*graph_ptr)[node] = std::move(result);
         }
     }
 }
@@ -194,7 +194,7 @@ void merge_graphs(node_id_to_node_id_vector_of_vectors* local_graph_ptr) {
         max_memory_use = max((long) (get_memory_use()*1024), (long) max_memory_use);
     }
     if ((*graph_ptr).size() == 0) {
-        (*graph_ptr) = move(*local_graph_ptr);
+        (*graph_ptr) = std::move(*local_graph_ptr);
         graph_lock.unlock();
         return;
     }
@@ -204,23 +204,24 @@ void merge_graphs(node_id_to_node_id_vector_of_vectors* local_graph_ptr) {
                     (*graph_ptr)[node].begin(), (*graph_ptr)[node].end(),
                     back_inserter(result)
         );
-        (*graph_ptr)[node] = move(result);
+        (*graph_ptr)[node] = std::move(result);
     }
     graph_lock.unlock();
 }
 
 void barcode_similarity(){
-    for (int i = 0; i < ASCII_SIZE; i++) {
-        valid_base[i] = false;
-    }
-    valid_base['A'] = true;
-    valid_base['C'] = true;
-    valid_base['G'] = true;
-    valid_base['T'] = true;
-    valid_base['a'] = true;
-    valid_base['c'] = true;
-    valid_base['g'] = true;
-    valid_base['t'] = true;
+    std::fill(std::begin(valid_base), std::end(valid_base), false);
+    auto mark_base = [&](char base) {
+        valid_base[static_cast<unsigned char>(base)] = true;
+    };
+    mark_base('A');
+    mark_base('C');
+    mark_base('G');
+    mark_base('T');
+    mark_base('a');
+    mark_base('c');
+    mark_base('g');
+    mark_base('t');
 
     size_t mask_count = 1;
     vector<bool> mask(barcode_length_1+barcode_length_2, false);
@@ -343,82 +344,48 @@ void extract_clusters(){
 }
 
 void output_clusters(){
-    ifstream fastq1;
-    ifstream fastq2;
-    gzFile fastq1_gz = Z_NULL;
-    gzFile fastq2_gz = Z_NULL;
-    kseq_t* fastq1_gz_reader = NULL;
-    kseq_t* fastq2_gz_reader = NULL;
-    if (!gz_input) {
-        fastq1.open (input_1);
-        fastq2.open (input_2);
-    } else {
-        fastq1_gz = gzopen(input_1.c_str(), "r");
-        fastq2_gz = gzopen(input_2.c_str(), "r");
-        fastq1_gz_reader = kseq_init(fastq1_gz);
-        fastq2_gz_reader = kseq_init(fastq2_gz);
-    }
-    string name_1, quality_1, sequence_1, name_2, quality_2, sequence_2, trash;
-    if (!sort_clusters) {
-        read_id_t current_read = 0;
-        ofstream clusters;
+    FastqRecord record_1;
+    FastqRecord record_2;
+    try {
+        FastqReader fastq_reader_1(input_1, input_compression);
+        FastqReader fastq_reader_2(input_2, input_compression);
 
-        clusters = ofstream(output_prefix + "cluster");
-        while (true) {
-            if (!gz_input) {
-                bool valid_txt_line = true;
-                valid_txt_line = valid_txt_line && getline(fastq1, name_1);
-                valid_txt_line = valid_txt_line && getline(fastq1, sequence_1);
-                valid_txt_line = valid_txt_line && getline(fastq1, trash);
-                valid_txt_line = valid_txt_line && getline(fastq1, quality_1);
-                valid_txt_line = valid_txt_line && getline(fastq2, name_2);
-                valid_txt_line = valid_txt_line && getline(fastq2, sequence_2);
-                valid_txt_line = valid_txt_line && getline(fastq2, trash);
-                valid_txt_line = valid_txt_line && getline(fastq2, quality_2);
-                if (!valid_txt_line) {
+        if (!sort_clusters) {
+            read_id_t current_read = 0;
+            ofstream clusters(output_prefix + "cluster");
+
+            while (true) {
+                bool has_first = fastq_reader_1.readRecord(record_1);
+                bool has_second = fastq_reader_2.readRecord(record_2);
+                if (!has_first || !has_second) {
+                    if (has_first != has_second) {
+                        cout << "Input FASTQ files have different numbers of reads.\n";
+                        exit(-1);
+                    }
                     break;
                 }
-            } else {
-                int valid_gz_line = 0;
-                valid_gz_line = kseq_read(fastq1_gz_reader);
-                if (valid_gz_line < 0) {
-                    break;
+
+                if (record_1.sequence.size() != record_1.quality.size() ||
+                    record_2.sequence.size() != record_2.quality.size()) {
+                    cerr << "ERROR: Sequence and quality length mismatch detected.\n";
+                    cerr << "name_1\t" << record_1.name << "\n";
+                    cerr << "sequence_1\t" << record_1.sequence << "\n";
+                    cerr << "quality_1\t" << record_1.quality << "\n";
+                    cerr << "name_2\t" << record_2.name << "\n";
+                    cerr << "sequence_2\t" << record_2.sequence << "\n";
+                    cerr << "quality_2\t" << record_2.quality << "\n";
+                    exit(-1);
                 }
-                valid_gz_line = kseq_read(fastq2_gz_reader);
-                if (valid_gz_line < 0) {
-                    break;
-                }
-                name_1     = "@";
-                name_1     += fastq1_gz_reader->name.s;
-                sequence_1 = fastq1_gz_reader->seq.s;
-                quality_1  = fastq1_gz_reader->qual.s;
-                name_2     = "@";
-                name_2     += fastq2_gz_reader->name.s;
-                sequence_2 = fastq2_gz_reader->seq.s;
-                quality_2  = fastq2_gz_reader->qual.s;
+
+                node_id_t current_read_node = read_to_node_vector[current_read];
+                clusters << node_to_cluster_vector[current_read_node] << "\t" << current_read_node << "\t" << current_read << "\t";
+                clusters << record_1.name << "\t" << record_1.sequence << "\t" << record_1.quality << "\t";
+                clusters << record_2.name << "\t" << record_2.sequence << "\t" << record_2.quality << "\n";
+                current_read++;
             }
-
-            if (name_1.size() != name_2.size() || sequence_1.size() != quality_1.size() || sequence_2.size() != quality_2.size()) {
-                cerr << "ERROR: Something is fishy with read:\n";
-                cerr << "name_1\t" << name_1 << "\n";
-                cerr << "sequence_1\t" << sequence_1 << "\n";
-                cerr << "trash\t" << trash << "\n";
-                cerr << "quality_1\t" << quality_1 << "\n";
-                cerr << "name_2\t" << name_2 << "\n";
-                cerr << "sequence_2\t" << sequence_2 << "\n";
-                cerr << "trash\t" << trash << "\n";
-                cerr << "quality_2\t" << quality_2 << "\n";
-                exit(-1);
-            }
-
-            node_id_t current_read_node = read_to_node_vector[current_read];
-            clusters << node_to_cluster_vector[current_read_node] << "\t" << current_read_node << "\t" << current_read << "\t";
-            clusters << name_1 << "\t" << sequence_1 << "\t" << quality_1 << "\t";
-            clusters << name_2 << "\t" << sequence_2 << "\t" << quality_2 << "\n";
-            current_read++;
+            return;
         }
-        return;
-    } else {
+
         read_id_t current_read = 0;
         ofstream clusters;
         if (max_memory_use == 0) {
@@ -440,44 +407,33 @@ void output_clusters(){
         }
 
         while (true) {
-            if (!gz_input) {
-                bool valid_txt_line = true;
-                valid_txt_line = valid_txt_line && getline(fastq1, name_1);
-                valid_txt_line = valid_txt_line && getline(fastq1, sequence_1);
-                valid_txt_line = valid_txt_line && getline(fastq1, trash);
-                valid_txt_line = valid_txt_line && getline(fastq1, quality_1);
-                valid_txt_line = valid_txt_line && getline(fastq2, name_2);
-                valid_txt_line = valid_txt_line && getline(fastq2, sequence_2);
-                valid_txt_line = valid_txt_line && getline(fastq2, trash);
-                valid_txt_line = valid_txt_line && getline(fastq2, quality_2);
-                if (!valid_txt_line) {
-                    break;
+            bool has_first = fastq_reader_1.readRecord(record_1);
+            bool has_second = fastq_reader_2.readRecord(record_2);
+            if (!has_first || !has_second) {
+                if (has_first != has_second) {
+                    cout << "Input FASTQ files have different numbers of reads.\n";
+                    exit(-1);
                 }
-            } else {
-                int valid_gz_line;
-                valid_gz_line = kseq_read(fastq1_gz_reader);
-                if (valid_gz_line < 0) {
-                    break;
-                }
-                valid_gz_line = kseq_read(fastq2_gz_reader);
-                if (valid_gz_line < 0) {
-                    break;
-                }
-                name_1     = "@";
-                name_1     += fastq1_gz_reader->name.s;
-                sequence_1 = fastq1_gz_reader->seq.s;
-                quality_1  = fastq1_gz_reader->qual.s;
-                name_2     = "@";
-                name_2     += fastq2_gz_reader->name.s;
-                sequence_2 = fastq2_gz_reader->seq.s;
-                quality_2  = fastq2_gz_reader->qual.s;
+                break;
+            }
+
+            if (record_1.sequence.size() != record_1.quality.size() ||
+                record_2.sequence.size() != record_2.quality.size()) {
+                cerr << "ERROR: Sequence and quality length mismatch detected.\n";
+                cerr << "name_1\t" << record_1.name << "\n";
+                cerr << "sequence_1\t" << record_1.sequence << "\n";
+                cerr << "quality_1\t" << record_1.quality << "\n";
+                cerr << "name_2\t" << record_2.name << "\n";
+                cerr << "sequence_2\t" << record_2.sequence << "\n";
+                cerr << "quality_2\t" << record_2.quality << "\n";
+                exit(-1);
             }
 
             node_id_t current_read_node = read_to_node_vector[current_read];
             size_t current_temp_out_id = node_to_cluster_vector[current_read_node] % temp_out_count;
             temp_out_files[current_temp_out_id] << node_to_cluster_vector[current_read_node] << "\t" << current_read_node << "\t" << current_read << "\t";
-            temp_out_files[current_temp_out_id] << name_1 << "\t" << sequence_1 << "\t" << quality_1 << "\t";
-            temp_out_files[current_temp_out_id] << name_2 << "\t" << sequence_2 << "\t" << quality_2 << "\n";
+            temp_out_files[current_temp_out_id] << record_1.name << "\t" << record_1.sequence << "\t" << record_1.quality << "\t";
+            temp_out_files[current_temp_out_id] << record_2.name << "\t" << record_2.sequence << "\t" << record_2.quality << "\n";
             current_read++;
         }
         read_id_to_node_id_vector().swap(read_to_node_vector);
@@ -495,13 +451,14 @@ void output_clusters(){
                 size_t cluster_id = stoi(record.substr(0, record.find("\t"))) % temp_out_count;
                 records[cluster_id]+= record + "\n";
             }
-            for (string record : records) {
-                clusters << record;
+            for (const string& record_line : records) {
+                clusters << record_line;
             }
             temp_file.close();
             remove(temp_out_names[i].c_str());
         }
+    } catch (const std::exception& ex) {
+        cout << ex.what() << "\n";
+        exit(-1);
     }
-
-
 }

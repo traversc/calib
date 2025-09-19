@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fastq_reader.h"
+
 
 #ifndef CALIB_GLOBAL_H
 #define CALIB_GLOBAL_H
@@ -30,7 +32,7 @@ extern int thread_count;
 extern bool print_mem;
 extern bool silent;
 extern bool sort_clusters;
-extern bool gz_input;
+extern CompressionType input_compression;
 
 int get_memory_use();
 
