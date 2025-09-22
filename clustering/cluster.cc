@@ -20,6 +20,8 @@
 #include <sstream>
 #include <iomanip>
 
+#include "text_io.h"
+
 using namespace std;
 
 
@@ -350,9 +352,49 @@ void output_clusters(){
         FastqReader fastq_reader_1(input_1, input_compression);
         FastqReader fastq_reader_2(input_2, input_compression);
 
+        auto build_cluster_record = [&](node_id_t current_read_node,
+                                        read_id_t current_read,
+                                        const std::string& name_1,
+                                        const std::string& sequence_1,
+                                        const std::string& quality_1,
+                                        const std::string& name_2,
+                                        const std::string& sequence_2,
+                                        const std::string& quality_2) {
+            std::string record;
+            if (compact_cluster_output) {
+                record.reserve(32);
+                record += std::to_string(node_to_cluster_vector[current_read_node]);
+                record.push_back('\t');
+                record += std::to_string(current_read_node);
+                record.push_back('\t');
+                record += std::to_string(current_read);
+            } else {
+                record.reserve(name_1.size() + name_2.size() + sequence_1.size() + sequence_2.size() + quality_1.size() + quality_2.size() + 64);
+                record += std::to_string(node_to_cluster_vector[current_read_node]);
+                record.push_back('\t');
+                record += std::to_string(current_read_node);
+                record.push_back('\t');
+                record += std::to_string(current_read);
+                record.push_back('\t');
+                record += name_1;
+                record.push_back('\t');
+                record += sequence_1;
+                record.push_back('\t');
+                record += quality_1;
+                record.push_back('\t');
+                record += name_2;
+                record.push_back('\t');
+                record += sequence_2;
+                record.push_back('\t');
+                record += quality_2;
+            }
+            record.push_back('\n');
+            return record;
+        };
+
         if (!sort_clusters) {
             read_id_t current_read = 0;
-            ofstream clusters(output_prefix + "cluster");
+            auto cluster_writer = TextWriter::create(output_prefix + "cluster", cluster_output_compression);
 
             while (true) {
                 bool has_first = fastq_reader_1.readRecord(record_1);
@@ -378,16 +420,22 @@ void output_clusters(){
                 }
 
                 node_id_t current_read_node = read_to_node_vector[current_read];
-                clusters << node_to_cluster_vector[current_read_node] << "\t" << current_read_node << "\t" << current_read << "\t";
-                clusters << record_1.name << "\t" << record_1.sequence << "\t" << record_1.quality << "\t";
-                clusters << record_2.name << "\t" << record_2.sequence << "\t" << record_2.quality << "\n";
+                std::string record = build_cluster_record(current_read_node,
+                                                          current_read,
+                                                          record_1.name,
+                                                          record_1.sequence,
+                                                          record_1.quality,
+                                                          record_2.name,
+                                                          record_2.sequence,
+                                                          record_2.quality);
+                cluster_writer->write(record);
                 current_read++;
-            }
-            return;
         }
+        return;
+    }
 
         read_id_t current_read = 0;
-        ofstream clusters;
+        std::unique_ptr<TextWriter> cluster_writer;
         if (max_memory_use == 0) {
             max_memory_use = 1024;
         }
@@ -431,15 +479,21 @@ void output_clusters(){
 
             node_id_t current_read_node = read_to_node_vector[current_read];
             size_t current_temp_out_id = node_to_cluster_vector[current_read_node] % temp_out_count;
-            temp_out_files[current_temp_out_id] << node_to_cluster_vector[current_read_node] << "\t" << current_read_node << "\t" << current_read << "\t";
-            temp_out_files[current_temp_out_id] << record_1.name << "\t" << record_1.sequence << "\t" << record_1.quality << "\t";
-            temp_out_files[current_temp_out_id] << record_2.name << "\t" << record_2.sequence << "\t" << record_2.quality << "\n";
+            std::string record = build_cluster_record(current_read_node,
+                                                      current_read,
+                                                      record_1.name,
+                                                      record_1.sequence,
+                                                      record_1.quality,
+                                                      record_2.name,
+                                                      record_2.sequence,
+                                                      record_2.quality);
+            temp_out_files[current_temp_out_id] << record;
             current_read++;
         }
         read_id_to_node_id_vector().swap(read_to_node_vector);
         node_id_to_cluster_id_vector().swap(node_to_cluster_vector);
 
-        clusters = ofstream(output_prefix + "cluster");
+        cluster_writer = TextWriter::create(output_prefix + "cluster", cluster_output_compression);
         for (size_t i = 0; i < temp_out_count; i++) {
             cout << "Processing file " << temp_out_names[i] << "\n";
             temp_out_files[i].close();
@@ -452,7 +506,9 @@ void output_clusters(){
                 records[cluster_id]+= record + "\n";
             }
             for (const string& record_line : records) {
-                clusters << record_line;
+                if (!record_line.empty()) {
+                    cluster_writer->write(record_line);
+                }
             }
             temp_file.close();
             remove(temp_out_names[i].c_str());

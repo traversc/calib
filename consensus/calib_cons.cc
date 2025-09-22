@@ -9,8 +9,12 @@
 #include <functional>
 #include <locale>
 #include <exception>
+#include <algorithm>
+#include <cctype>
+#include <array>
 
 #include "../clustering/fastq_reader.h"
+#include "../clustering/text_io.h"
 
 #define ALIGNMENT_TYPE_GLOBAL 1
 #define SCORE_M 5
@@ -26,6 +30,8 @@ std::string cluster_filename = "";
 std::vector<std::string> fastq_filenames;
 std::vector<std::string> output_filenames;
 CompressionType fastq_compression = CompressionType::AUTO;
+CompressionType cluster_input_compression = CompressionType::AUTO;
+CompressionType output_compression = CompressionType::PLAIN;
 typedef uint32_t cluster_id_t;
 typedef uint32_t read_id_t;
 
@@ -51,23 +57,34 @@ void print_help(){
     std::cout << "                                    default: 2)\n";
     std::cout << "  -x  --max-reads-per-cluster    (positive integer;\n";
     std::cout << "                                    default: 1000)\n";
-    std::cout << "  -g  --gzip-input               (type: no value; forces gzip input)\n";
-    std::cout << "      --zstd-input               (type: no value; forces zstd input)\n";
-    std::cout << "      --plain-input              (type: no value; forces plain text input; default: auto-detect by extension)\n";
+    std::cout << "      --input-format <auto|plain|gzip|zstd>      (type: string; default: auto)\n";
+    std::cout << "      --cluster-input-format <auto|plain|gzip|zstd> (type: string; default: auto)\n";
+    std::cout << "      --output-format <plain|gzip|zstd>          (type: string; default: plain)\n";
     std::cout << "  -h  --help\n";
 }
 
 void parse_flags(int argc, char *argv[]){
-    auto set_compression = [&](CompressionType type, const std::string& flag) {
-        if (fastq_compression != CompressionType::AUTO && fastq_compression != type) {
-            std::cout << "Conflicting compression parameter. Already set to "
-                      << compressionTypeName(fastq_compression)
-                      << ", cannot change to " << compressionTypeName(type)
-                      << " via " << flag << "\n";
-            print_help();
-            exit(-1);
+    bool input_format_specified = false;
+    bool output_format_specified = false;
+    auto parse_format_value = [&](const std::string& value, const std::string& flag, bool allow_auto) {
+        std::string lower = value;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        if (allow_auto && lower == "auto") {
+            return CompressionType::AUTO;
         }
-        fastq_compression = type;
+        if (lower == "plain") {
+            return CompressionType::PLAIN;
+        }
+        if (lower == "gzip") {
+            return CompressionType::GZIP;
+        }
+        if (lower == "zstd" || lower == "zstandard") {
+            return CompressionType::ZSTD;
+        }
+        std::cout << "Unknown format value '" << value << "' for " << flag << "\n";
+        print_help();
+        exit(-1);
+        return CompressionType::AUTO;
     };
     for (int i = 1; i < argc; i++) {
         std::string current_param(argv[i]);
@@ -119,16 +136,54 @@ void parse_flags(int argc, char *argv[]){
             }
             continue;
         }
-        if (current_param == "-g" || current_param == "--gzip-input") {
-            set_compression(CompressionType::GZIP, current_param);
+        if (current_param == "--input-format") {
+            if (i + 1 >= argc) {
+                std::cout << "Missing value for --input-format" << '\n';
+                print_help();
+                exit(-1);
+            }
+            CompressionType requested = parse_format_value(std::string(argv[i+1]), current_param, true);
+            if (input_format_specified && requested != fastq_compression) {
+                std::cout << "Conflicting input format. Already set to "
+                          << compressionTypeName(fastq_compression)
+                          << ", cannot change to " << compressionTypeName(requested)
+                          << " via " << current_param << "\n";
+                print_help();
+                exit(-1);
+            }
+            fastq_compression = requested;
+            input_format_specified = true;
+            i++;
             continue;
         }
-        if (current_param == "--zstd-input") {
-            set_compression(CompressionType::ZSTD, current_param);
+        if (current_param == "--cluster-input-format") {
+            if (i + 1 >= argc) {
+                std::cout << "Missing value for --cluster-input-format" << '\n';
+                print_help();
+                exit(-1);
+            }
+            cluster_input_compression = parse_format_value(std::string(argv[i+1]), current_param, true);
+            i++;
             continue;
         }
-        if (current_param == "--plain-input") {
-            set_compression(CompressionType::PLAIN, current_param);
+        if (current_param == "--output-format") {
+            if (i + 1 >= argc) {
+                std::cout << "Missing value for --output-format" << '\n';
+                print_help();
+                exit(-1);
+            }
+            CompressionType requested = parse_format_value(std::string(argv[i+1]), current_param, false);
+            if (output_format_specified && requested != output_compression) {
+                std::cout << "Conflicting output format. Already set to "
+                          << compressionTypeName(output_compression)
+                          << ", cannot change to " << compressionTypeName(requested)
+                          << " via " << current_param << "\n";
+                print_help();
+                exit(-1);
+            }
+            output_compression = requested;
+            output_format_specified = true;
+            i++;
             continue;
         }
         std::cout << "Unrecognized parameter, " << argv[i] << ", was passed.\n";
@@ -254,11 +309,10 @@ void run_consensus(){
     std::vector<std::vector<read_id_t> > cluster_to_reads;
     size_t read_count = 0;
     std::string line_buffer;
-    std::ifstream clusters_file;
-    clusters_file.open(cluster_filename);
-    // Get mapping of clusters to reads
+    CompressionType cluster_type = resolveCompression(cluster_input_compression, cluster_filename);
+    auto cluster_reader = make_line_reader(cluster_filename, cluster_type);
     std::cout << "Reading cluster file: " << cluster_filename << '\n';
-    while (getline(clusters_file, line_buffer)) {
+    while (cluster_reader->getline(line_buffer)) {
         std::stringstream ss(line_buffer);
         std::istream_iterator<std::string> begin(ss);
         std::istream_iterator<std::string> end;
@@ -302,19 +356,32 @@ void run_consensus(){
         for (size_t thread_id = 0; thread_id < thread_count; thread_id++) {
             threads[thread_id] = std::thread(process_clusters, std::ref(read_to_sequence), std::ref(cluster_to_reads), o_filename_prefix, thread_id);
         }
-        std::ofstream ofastq(o_filename_prefix + "fastq");
-        std::ofstream omsa(o_filename_prefix + "msa");
+        auto ofastq = TextWriter::create(o_filename_prefix + "fastq", output_compression);
+        auto omsa = TextWriter::create(o_filename_prefix + "msa", output_compression);
+        std::array<char, 1 << 15> copy_buffer{};
+        auto append_file_to_writer = [&](const std::string& path, TextWriter& writer) {
+            std::ifstream input(path, std::ios::binary);
+            if (!input.is_open()) {
+                std::cout << "Failed to open temporary file " << path << "\n";
+                exit(-1);
+            }
+            while (input) {
+                input.read(copy_buffer.data(), static_cast<std::streamsize>(copy_buffer.size()));
+                std::streamsize count = input.gcount();
+                if (count > 0) {
+                    writer.write(copy_buffer.data(), static_cast<size_t>(count));
+                }
+            }
+        };
         for (size_t thread_id = 0; thread_id < thread_count; thread_id++) {
             threads[thread_id].join();
 
             std::string fastq_t_filename = o_filename_prefix + "fastq" + std::to_string(thread_id);
-            std::ifstream ofastq_t(fastq_t_filename);
-            ofastq << ofastq_t.rdbuf();
+            append_file_to_writer(fastq_t_filename, *ofastq);
             remove(fastq_t_filename.c_str());
 
             std::string msa_t_filename = o_filename_prefix + "msa" + std::to_string(thread_id);
-            std::ifstream omsa_t(msa_t_filename);
-            omsa << omsa_t.rdbuf();
+            append_file_to_writer(msa_t_filename, *omsa);
             remove(msa_t_filename.c_str());
         }
     }

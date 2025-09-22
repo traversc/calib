@@ -132,59 +132,8 @@ consensus/calib_cons:
 	$(MAKE) -C consensus calib_cons
 
 test: all
-	@set -euo pipefail; \
-	command -v gzip >/dev/null 2>&1 || { echo "gzip is required for 'make test'"; exit 1; }; \
-	command -v zstd >/dev/null 2>&1 || { echo "zstd is required for 'make test'"; exit 1; }; \
-	tmp="$$(mktemp -d 2>/dev/null || mktemp -d -t calib-test)"; \
-	cleanup() { rm -rf "$$tmp"; }; \
-	trap cleanup EXIT; \
-	printf '@read1/1\nAACCGGTT\n+\nFFFFFFFF\n@read2/1\nAACCGGTA\n+\nFFFFFFFF\n' > "$$tmp/reads_R1.fastq"; \
-	printf '@read1/2\nTTGGCCAA\n+\nFFFFFFFF\n@read2/2\nTTGGCCAT\n+\nFFFFFFFF\n' > "$$tmp/reads_R2.fastq"; \
-	gzip -c "$$tmp/reads_R1.fastq" > "$$tmp/reads_R1.fastq.gz"; \
-	gzip -c "$$tmp/reads_R2.fastq" > "$$tmp/reads_R2.fastq.gz"; \
-	zstd --quiet -f -o "$$tmp/reads_R1.fastq.zst" "$$tmp/reads_R1.fastq"; \
-	zstd --quiet -f -o "$$tmp/reads_R2.fastq.zst" "$$tmp/reads_R2.fastq"; \
-	run_calib() { \
-	  name="$$1"; shift; \
-	  in1="$$1"; in2="$$2"; shift 2; \
-	  ./calib \
-	    --input-forward "$$in1" \
-	    --input-reverse "$$in2" \
-	    --output-prefix "$$tmp/$$name." \
-	    --barcode-length 1 \
-	    --ignored-sequence-prefix-length 0 \
-	    --minimizer-count 1 \
-	    --kmer-size 4 \
-	    --error-tolerance 1 \
-	    --minimizer-threshold 1 \
-	    --threads 1 \
-	    --silent "$$@" >/dev/null; \
-	}; \
-	run_calib plain "$$tmp/reads_R1.fastq" "$$tmp/reads_R2.fastq"; \
-	run_calib gz_auto "$$tmp/reads_R1.fastq.gz" "$$tmp/reads_R2.fastq.gz"; \
-	run_calib gz_flag "$$tmp/reads_R1.fastq.gz" "$$tmp/reads_R2.fastq.gz" --gzip-input; \
-	run_calib zst_auto "$$tmp/reads_R1.fastq.zst" "$$tmp/reads_R2.fastq.zst"; \
-	run_calib zst_flag "$$tmp/reads_R1.fastq.zst" "$$tmp/reads_R2.fastq.zst" --zstd-input; \
-	for variant in gz_auto gz_flag zst_auto zst_flag; do \
-	  cmp -s "$$tmp/plain.cluster" "$$tmp/$${variant}.cluster" || { echo "calib output mismatch for $$variant"; exit 1; }; \
-	done; \
-	run_cons() { \
-	  name="$$1"; shift; \
-	  in1="$$1"; in2="$$2"; shift 2; \
-	  ./consensus/calib_cons \
-	    -c "$$tmp/plain.cluster" \
-	    -q "$$in1" "$$in2" \
-	    -o "$$tmp/$$name.R1" "$$tmp/$$name.R2" \
-	    -t 1 "$$@" >/dev/null; \
-	}; \
-	run_cons plain "$$tmp/reads_R1.fastq" "$$tmp/reads_R2.fastq"; \
-	run_cons gz_flag "$$tmp/reads_R1.fastq.gz" "$$tmp/reads_R2.fastq.gz" --gzip-input; \
-	run_cons zst_flag "$$tmp/reads_R1.fastq.zst" "$$tmp/reads_R2.fastq.zst" --zstd-input; \
-	for variant in gz_flag zst_flag; do \
-	  cmp -s "$$tmp/plain.R1.fastq" "$$tmp/$${variant}.R1.fastq" || { echo "calib_cons R1 consensus mismatch for $$variant"; exit 1; }; \
-	  cmp -s "$$tmp/plain.R2.fastq" "$$tmp/$${variant}.R2.fastq" || { echo "calib_cons R2 consensus mismatch for $$variant"; exit 1; }; \
-	done; \
-	echo "All compression format checks passed"
+	tests/format_test.sh
+
 $(EXECUTABLE): $(EXECUTABLE).cc $(OBJECTS) $(ZSTD_LIB) Makefile
 	$(CXX) $(OBJECTS) -O2 $< $(CXXFLAGS) $(LDFLAGS) $(LDLIBS) $(ZLIB_LIB) -o $@
 

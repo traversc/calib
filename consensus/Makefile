@@ -4,11 +4,15 @@ my_current_dir :=  $(patsubst %/,%,$(dir $(my_mkfile_path)))/
 
 CXX?=g++
 CMAKE?=cmake
-cc_files?= calib_cons.cc ../clustering/fastq_reader.cc
+cc_files?= calib_cons.cc ../clustering/fastq_reader.cc ../clustering/text_io.cc
 cc_flags?=
 cmake_args?=-DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION=3.25 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 ZSTD_DIR?=../vendor/zstd
 ZSTD_LIB?=$(ZSTD_DIR)/lib/libzstd.a
+LDLIBS?=
+LDLIBS:=$(filter-out -lzstd,$(LDLIBS))
+LDLIBS+=-lzstd
+ZLIB_LIB?=-lz
 cc_args?= $(cc_flags)-std=c++11 -O3 -pthread -Ispoa_v1.1.3/include/ -I$(ZSTD_DIR)/lib -Lspoa_v1.1.3/build/lib/ -L$(ZSTD_DIR)/lib
 cmake_major:=$(shell $(CMAKE) --version | head -n1 | awk '{print $$3}' | cut -d. -f1)
 cmake_ok:=$(shell test "$(cmake_major)" -ge 3 >/dev/null 2>&1 && echo yes)

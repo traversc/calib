@@ -5,6 +5,8 @@
 #include "commandline.h"
 #include "fastq_reader.h"
 
+#include <algorithm>
+#include <cctype>
 #include <exception>
 
 using namespace std;
@@ -20,6 +22,8 @@ bool print_mem = false;
 bool silent = false;
 bool sort_clusters = false;
 CompressionType input_compression = CompressionType::AUTO;
+bool compact_cluster_output = false;
+CompressionType cluster_output_compression = CompressionType::PLAIN;
 int barcode_length_1 = -1;
 int barcode_length_2 = -1;
 int ignored_sequence_prefix_length = -1;
@@ -31,16 +35,44 @@ int thread_count = -1;
 
 void parse_flags(int argc, char *argv[]){
     int barcode_length = -1;
-    auto set_compression = [&](CompressionType type, const string& flag) {
-        if (input_compression != CompressionType::AUTO && input_compression != type) {
-            cout << "Conflicting compression parameter. Already set to "
-                 << compressionTypeName(input_compression)
-                 << ", cannot change to " << compressionTypeName(type)
-                 << " via " << flag << "\n";
-            print_help();
-            exit(-1);
+    bool input_format_specified = false;
+    bool output_format_specified = false;
+    auto parse_input_format = [&](const string& value, const string& flag) {
+        string lower = value;
+        transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        if (lower == "auto") {
+            return CompressionType::AUTO;
         }
-        input_compression = type;
+        if (lower == "plain") {
+            return CompressionType::PLAIN;
+        }
+        if (lower == "gzip") {
+            return CompressionType::GZIP;
+        }
+        if (lower == "zstd" || lower == "zstandard") {
+            return CompressionType::ZSTD;
+        }
+        cout << "Unknown input format '" << value << "' for " << flag << "\n";
+        print_help();
+        exit(-1);
+        return CompressionType::AUTO;
+    };
+    auto parse_output_format = [&](const string& value, const string& flag) {
+        string lower = value;
+        transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        if (lower == "plain") {
+            return CompressionType::PLAIN;
+        }
+        if (lower == "gzip") {
+            return CompressionType::GZIP;
+        }
+        if (lower == "zstd" || lower == "zstandard") {
+            return CompressionType::ZSTD;
+        }
+        cout << "Unknown output format '" << value << "' for " << flag << "\n";
+        print_help();
+        exit(-1);
+        return CompressionType::PLAIN;
     };
     for (int i = 1; i < argc; i++) {
         string current_param(argv[i]);
@@ -75,16 +107,48 @@ void parse_flags(int argc, char *argv[]){
             print_mem = true;
             continue;
         }
-        if (current_param == "-g" || current_param == "--gzip-input") {
-            set_compression(CompressionType::GZIP, current_param);
+        if (current_param == "--input-format") {
+            if (i + 1 >= argc) {
+                cout << "Missing value for --input-format" << "\n";
+                print_help();
+                exit(-1);
+            }
+            CompressionType requested = parse_input_format(string(argv[i+1]), current_param);
+            if (input_format_specified && requested != input_compression) {
+                cout << "Conflicting input format. Already set to "
+                     << compressionTypeName(input_compression)
+                     << ", cannot change to " << compressionTypeName(requested)
+                     << " via " << current_param << "\n";
+                print_help();
+                exit(-1);
+            }
+            input_compression = requested;
+            input_format_specified = true;
+            i++;
             continue;
         }
-        if (current_param == "--zstd-input") {
-            set_compression(CompressionType::ZSTD, current_param);
+        if (current_param == "--compact-cluster-output") {
+            compact_cluster_output = true;
             continue;
         }
-        if (current_param == "--plain-input") {
-            set_compression(CompressionType::PLAIN, current_param);
+        if (current_param == "--output-format") {
+            if (i + 1 >= argc) {
+                cout << "Missing value for --output-format" << "\n";
+                print_help();
+                exit(-1);
+            }
+            CompressionType requested = parse_output_format(string(argv[i+1]), current_param);
+            if (output_format_specified && requested != cluster_output_compression) {
+                cout << "Conflicting output format. Already set to "
+                     << compressionTypeName(cluster_output_compression)
+                     << ", cannot change to " << compressionTypeName(requested)
+                     << " via " << current_param << "\n";
+                print_help();
+                exit(-1);
+            }
+            cluster_output_compression = requested;
+            output_format_specified = true;
+            i++;
             continue;
         }
         if ((barcode_length == -1) && (barcode_length_1 == -1) && (barcode_length_2 == -1) && (current_param == "-l" || current_param == "--barcode-length")) {
@@ -155,7 +219,7 @@ void parse_flags(int argc, char *argv[]){
         cout << "Forward and reverse FASTQ files appear to use different compression formats ("
              << compressionTypeName(forward_type) << " vs. "
              << compressionTypeName(reverse_type)
-             << "). Please supply matching files or override with --plain-input/--gzip-input/--zstd-input.\n";
+             << "). Please supply matching files or override with --input-format." << "\n";
         print_help();
         exit(-1);
     }
@@ -281,7 +345,7 @@ void print_flags(){
     cout << "\tinput_1:\t" << input_1 << "\n";
     cout << "\tinput_2:\t" << input_2 << "\n";
     cout << "\toutput_prefix:\t" << output_prefix << "\n";
-    cout << "\tcompression:\t" << compressionTypeName(input_compression) << "\n";
+    cout << "\tinput_format:\t" << compressionTypeName(input_compression) << "\n";
     cout << "\tbarcode_length_1:\t" << barcode_length_1 << "\n";
     cout << "\tbarcode_length_2:\t" << barcode_length_2 << "\n";
     cout << "\tignored_sequence_prefix_length:\t" << ignored_sequence_prefix_length << "\n";
@@ -290,6 +354,8 @@ void print_flags(){
     cout << "\terror_tolerance:\t" << error_tolerance << "\n";
     cout << "\tminimizer_threshold:\t" << minimizer_threshold << "\n";
     cout << "\tthreads:\t" << thread_count << "\n";
+    cout << "\toutput_format:\t" << compressionTypeName(cluster_output_compression) << "\n";
+    cout << "\tcompact_cluster_output:\t" << (compact_cluster_output ? "true" : "false") << "\n";
     cout << "\n";
 
 }
@@ -305,9 +371,9 @@ void print_help(){
     cout << "\t-s    --silent                        \t(type: no value; default: unset)\n";
     cout << "\t-q    --sort                          \t(type: no value; default:  unset)\n";
     cout << "\t-z    --print-mem                     \t(type: no value; default:  unset)\n";
-    cout << "\t-g    --gzip-input                    \t(type: no value; forces gzip compression)\n";
-    cout << "\t      --zstd-input                    \t(type: no value; forces zstd compression)\n";
-    cout << "\t      --plain-input                   \t(type: no value; forces plain text input; default: auto-detect by extension)\n";
+    cout << "\t      --input-format <auto|plain|gzip|zstd> \t(type: string; default: auto)\n";
+    cout << "\t      --output-format <plain|gzip|zstd>   \t(type: string; default: plain)\n";
+    cout << "\t      --compact-cluster-output        \t(type: no value; writes only cluster, node, and read IDs)\n";
     cout << "\t-l    --barcode-length                \t(type: int;      REQUIRED paramter unless -l1 and -l2 are provided)\n";
     cout << "\t-l1   --barcode-length-1              \t(type: int;      REQUIRED paramter unless -l is provided)\n";
     cout << "\t-l2   --barcode-length-2              \t(type: int;      REQUIRED paramter unless -l is provided)\n";

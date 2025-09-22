@@ -11,7 +11,7 @@ You can install Calib directly from source, or from `conda`.
 
 ### From source
 
-Calib main module has one prerequisite:
+The Calib main module has one prerequisite:
 - GCC with version 5.2 or higher
 
 Calib error correction module depends on [SPOA](https://github.com/rvaser/spoa) v1.1.3 which in turn depends on CMake v3. 
@@ -52,7 +52,7 @@ This will install `calib` and `calib_cons` to your conda environment bin folder.
 
 ### Other Calib scripts
 Calib repository includes a simulation module that was used to fine-tune Calib's clustering parameters.
-The module files are under `simulation` directory.
+The module files are under the `simulation` directory.
 The module has some Python3 prerequisites that can be easily satisfied using [Conda](https://conda.io/) package manager:
 
 - [pyfaidx](https://pypi.python.org/pypi/pyfaidx)
@@ -67,7 +67,7 @@ Finally, if you want to generate the different plots (check this [README](slurm_
 
 - [plotly](http://plot.ly/python/) 
 
-Which can be also easily installed using Conda.
+This can also be easily installed using Conda.
 
 
 
@@ -89,7 +89,7 @@ For example:
 calib -f R1.fastq -r R2.fastq -l 8 -o R.
 ```
 
-Calib will cluster the reads in `<reads_1>` and `<reads_2>` FASTQ files that are tagged with barcode tags of length `<barcode_tag_length>`. Note that this tag length of the length of barcode tag on one mate of the paired-end reads. The output filename will be `<output_file_prefix>cluster`.
+Calib will cluster the reads in `<reads_1>` and `<reads_2>` FASTQ files that are tagged with barcode tags of length `<barcode_tag_length>`. Note that this tag length is the length of the barcode tag on one mate of the paired-end reads. The output filename will be `<output_file_prefix>cluster`.
 
 #### Output format
 
@@ -109,18 +109,18 @@ The output file will contain one line per input read. Each record is tab separat
 
 Calib clustering has different clustering parameters that can be changed manually from the default pre-configuration:
 
-- `--error_tolerance` or `-e`: positive integer no larger than `l`, the barcode tag length
-- `--kmer-size` or `k`: positive integer
-- `--minimizer-count` or `-m`: positive integers
-- `--minimizer-threshold` or `t`: nonnegative integer no larger than `m`
+- `--error-tolerance` or `-e`: positive integer no larger than `l`, the barcode tag length
+- `--kmer-size` or `-k`: positive integer
+- `--minimizer-count` or `-m`: positive integer
+- `--minimizer-threshold` or `-t`: nonnegative integer no larger than `m`
 
-Changing these parameters is might not be very obvious. We recommend checking with our [parameter selection experiments](experiments/parameter_tests/) before doing so.
+Changing these parameters might not be very obvious. We recommend checking with our [parameter selection experiments](experiments/parameter_tests/) before doing so.
 
 #### Clustering multithreading
 
-Calib clustering is can run multi-threaded using:
+Calib clustering can run multi-threaded using:
 
-- `--threads` or `c`: positive integer no larger than 8.
+- `--threads` or `-c`: positive integer no larger than 8.
 
 Note that Calib's runtime and memory do not scale well with increased number of threads.
 Please check our [thread scalability experiments](experiments/scalability/) to have an idea on the time vs. memory tradeoff of Calib clustering multithreading.
@@ -129,9 +129,11 @@ Please check our [thread scalability experiments](experiments/scalability/) to h
 
 Finally, Calib clustering has these parameters that are added for convenience:
 
-- `--ignored-sequence-prefix-length` or `p`:  nonnegative integer for the number of bases to ignore in clustering after the barcode tag in the read sequences.
+- `--ignored-sequence-prefix-length` or `-p`:  nonnegative integer for the number of bases to ignore in clustering after the barcode tag in the read sequences.
 - `--sort`: A flag to tell Calib to group the reads of the same clusters together. Do not add this flag if you want a bit of speed-up and don't care about sorting (`calib_cons` module does not care about sorting).
-- `-g` or  `--gzip-input`: set this flag if the input is gzipped
+- `--input-format <auto|plain|gzip|zstd>`: explicitly set the input FASTQ compression (default: auto-detect by extension).
+- `--output-format <plain|gzip|zstd>`: choose the compression used for the cluster output file (default: plain text).
+- `--compact-cluster-output`: Write only the first three columns (cluster, node, read IDs) for smaller cluster files.
 
 ### Error Correction (consensus module)
 
@@ -150,17 +152,18 @@ calib_cons -c R.cluster -q R1.fastq R2.fastq -o R1. R2.
 #### Output format
 
 Calib error correction will output two files per input FASTQ file. One file will be a FASTQ file containing one record per consensus generated. The second file will contain multiple sequence alignment (MSA) of the cluster sequences. 
+FASTQ input compression can be forced with `--input-format <auto|plain|gzip|zstd>` (default: auto). Output compression can be controlled via `--output-format <plain|gzip|zstd>` (default: plain). The cluster input file may be plain, gzip, or zstd compressed; auto-detection runs by default and can be overridden with `--cluster-input-format <auto|plain|gzip|zstd>`.
 
 #### Error correction parameters
 
-Error correction has one parameter:
+Error correction has these parameters:
 
 - `--min-reads-per-cluster` or `-m`: positive integer for the minimum number of reads required in a cluster to output the cluster consensus. Default is 2.
-- `--threads` or `t`: positive integer for number of threads to use. Default is `4`.
+- `--threads` or `-t`: positive integer for number of threads to use. Default is `4`.
 
 ### Simulation module
 
-Calib has a simulation molecule that generates paired-end UMI tagged reads. The simulation pipeline is Calib's Makefile itself. It generates the following components:
+Calib has a simulation module that generates paired-end UMI tagged reads. The simulation pipeline is Calib's Makefile itself. It generates the following components:
 
 - `panel`: A BED file containing the exons coordinates of a list of genes. Its Make variables are:
   - `annotation`: GTF annotation file
@@ -189,7 +192,7 @@ Since Calib simulation pipeline is basically a Makefile, any target that depends
 make simulate num_molecules=1000
 ```
 
-Will generate paired-end reads using all the default simulation parameters (check Makefile header) but with `num_molecules` of 1000. 
+This will generate paired-end reads using all the default simulation parameters (check Makefile header) but with `num_molecules` of 1000. 
 
 # Citation
 
@@ -197,4 +200,4 @@ Baraa Orabi, Emre Erhan, Brian McConeghy, Stanislav V Volik, Stephane Le Bihan, 
 
 # Reporting issues and bugs
 
-If you have any issues, questions, or bug reports, please [open an issue](https://github.com/vpc-ccg/calib/issues/new) and will try to address promptly.
+If you have any issues, questions, or bug reports, please [open an issue](https://github.com/vpc-ccg/calib/issues/new) and we will try to address promptly.

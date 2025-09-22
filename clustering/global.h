@@ -33,6 +33,8 @@ extern bool print_mem;
 extern bool silent;
 extern bool sort_clusters;
 extern CompressionType input_compression;
+extern bool compact_cluster_output;
+extern CompressionType cluster_output_compression;
 
 int get_memory_use();
 
