@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cctype>
 #include <array>
+#include <cmath>
+#include <vector>
 
 #include "../clustering/fastq_reader.h"
 #include "../clustering/text_io.h"
@@ -218,7 +220,22 @@ void parse_flags(int argc, char *argv[]){
 
 }
 
-void process_clusters(const std::vector<std::string>& read_to_sequence, const std::vector<std::vector<read_id_t> >& cluster_to_reads, std::string o_filename_prefix, size_t thread_id) {
+char consensus_quality_from_agreement(double agreement_fraction) {
+    if (!std::isfinite(agreement_fraction) || agreement_fraction <= 0.0) {
+        return static_cast<char>('!' + 0);
+    }
+    double clamped = std::max(0.5, std::min(1.0, agreement_fraction));
+    double normalized = (clamped - 0.5) / 0.5;
+    int phred_value = static_cast<int>(std::round(normalized * 93.0));
+    phred_value = std::max(0, std::min(93, phred_value));
+    return static_cast<char>('!' + phred_value);
+}
+
+void process_clusters(const std::vector<std::string>& read_to_sequence,
+                      const std::vector<std::string>& read_to_quality,
+                      const std::vector<std::vector<read_id_t> >& cluster_to_reads,
+                      std::string o_filename_prefix,
+                      size_t thread_id) {
     std::ofstream ofastq(o_filename_prefix + "fastq" + std::to_string(thread_id));
     std::ofstream omsa(o_filename_prefix + "msa" + std::to_string(thread_id));
     for (cluster_id_t cid = thread_id; cid < cluster_to_reads.size(); cid+=thread_count) {
@@ -228,79 +245,104 @@ void process_clusters(const std::vector<std::string>& read_to_sequence, const st
         if (cluster_to_reads[cid].size() > max_reads_per_cluster) {
             continue;
         }
-        auto alignment_engine = spoa::createAlignmentEngine(
-            static_cast<spoa::AlignmentType>(ALIGNMENT_TYPE_GLOBAL), SCORE_M, SCORE_X, SCORE_G
-        );
-        auto graph = spoa::createGraph();
         std::stringstream header;
         header << cid << "\t";
-        for (read_id_t rid : cluster_to_reads[cid]) {
-            header << rid << ";";
-            auto alignment = alignment_engine->align_sequence_with_graph(read_to_sequence[rid], graph);
-            graph->add_alignment(alignment, read_to_sequence[rid]);
-        }
-        std::string consensus;
-        std::string qual;
-        std::vector<std::string> msa;
-        graph->generate_multiple_sequence_alignment(msa);
 
-        size_t profile_width = msa[0].size();
-        size_t profile_height = msa.size();
-        float profile[profile_width][ASCII_SIZE];
-        for (int col = 0; col < profile_width; col++) {
-            for (int row = 0; row < ASCII_SIZE; row++) {
-                profile[col][row] = 0;
-            }
+        const auto& read_ids = cluster_to_reads[cid];
+        size_t cluster_size = read_ids.size();
+
+        size_t reads_to_use = cluster_size;
+        if (max_reads_per_cluster > 1000 && reads_to_use > 1000) {
+            reads_to_use = 1000;
         }
-        for (const auto& it : msa) {
-            for (int col = 0; col < profile_width; col++) {
-                profile[col][it[col]]++;
-            }
+
+        for (size_t idx = 0; idx < reads_to_use; ++idx) {
+            header << read_ids[idx] << ";";
         }
-        consensus.reserve(profile_width);
-        for (int col = 0; col < profile_width; col++) {
-            double majority_percentage = 0;
-            bool is_gap = false;
-            if        (profile[col]['A']/profile_height > MSA_MAJORITY) {
-                consensus += 'A';
-                majority_percentage = profile[col]['A']/profile_height;
-            } else if (profile[col]['C']/profile_height > MSA_MAJORITY) {
-                consensus += 'C';
-                majority_percentage = profile[col]['C']/profile_height;
-            } else if (profile[col]['G']/profile_height > MSA_MAJORITY) {
-                consensus += 'G';
-                majority_percentage = profile[col]['G']/profile_height;
-            } else if (profile[col]['T']/profile_height > MSA_MAJORITY) {
-                consensus += 'T';
-                majority_percentage = profile[col]['T']/profile_height;
-            } else if (profile[col]['-']/profile_height > MSA_MAJORITY) {
-                is_gap = true;
-            } else {
-                consensus += 'N';
+
+        // If only one read in cluster, skip MSA and use the read as consensus
+        if (min_reads_per_cluster == 1 && cluster_size == 1) {
+            read_id_t rid = read_ids[0];
+            const std::string& single_sequence = read_to_sequence[rid];
+            const std::string& single_quality = read_to_quality[rid];
+
+            ofastq << "@" << header.str() << '\n';
+            ofastq << single_sequence << '\n';
+            ofastq << '+' << '\n';
+            ofastq << single_quality << '\n';
+
+            omsa << "@" << header.str() << '\n';
+            omsa << single_sequence << '\n';
+            omsa << '+' << '\n';
+            omsa << single_sequence << '\n';
+        } else {
+            auto alignment_engine = spoa::createAlignmentEngine(
+                static_cast<spoa::AlignmentType>(ALIGNMENT_TYPE_GLOBAL), SCORE_M, SCORE_X, SCORE_G
+            );
+            auto graph = spoa::createGraph();
+            for (size_t idx = 0; idx < reads_to_use; ++idx) {
+                read_id_t rid = read_ids[idx];
+                auto alignment = alignment_engine->align_sequence_with_graph(read_to_sequence[rid], graph);
+                graph->add_alignment(alignment, read_to_sequence[rid]);
             }
-            
-            if (is_gap == false) {
-                if (majority_percentage > 0.90) {
-                    qual += 'K';
-                } else if (majority_percentage > 0.70) {
-                    qual += 'A';
-                } else if (majority_percentage > 0.50) {
-                    qual += '.';
-                } else {
-                    qual += '$';
+            std::string consensus;
+            std::string qual;
+            std::vector<std::string> msa;
+            graph->generate_multiple_sequence_alignment(msa);
+
+            size_t profile_width = msa[0].size();
+            size_t profile_height = msa.size();
+            struct ColumnProfile {
+                std::array<double, ASCII_SIZE> counts{};
+            };
+            std::vector<ColumnProfile> profile(profile_width);
+            for (const auto& it : msa) {
+                for (size_t col = 0; col < profile_width; col++) {
+                    unsigned char symbol = static_cast<unsigned char>(it[col]);
+                    unsigned char upper_symbol = symbol;
+                    int upper_value = std::toupper(static_cast<unsigned char>(symbol));
+                    if (upper_value >= 0 && upper_value < ASCII_SIZE) {
+                        upper_symbol = static_cast<unsigned char>(upper_value);
+                    }
+                    profile[col].counts[upper_symbol] += 1.0;
                 }
             }
-        }
-        ofastq << "@" << header.str() << '\n';
-        ofastq << consensus << '\n';
-        ofastq << '+' << '\n';
-        ofastq << qual << '\n';
+            
+            consensus.reserve(profile_width);
+            const std::array<char, 4> bases{'A', 'C', 'G', 'T'};
+            for (size_t col = 0; col < profile_width; col++) {
+                if (profile_height == 0) {
+                    continue;
+                }
+                double gap_fraction = profile[col].counts[static_cast<unsigned char>('-')] / static_cast<double>(profile_height);
+                if (gap_fraction > MSA_MAJORITY) { continue; } // skip columns with majority gaps
+                double best_fraction = 0.0;
+                char best_base = 'N';
+                for (char base : bases) {
+                    double fraction = profile[col].counts[static_cast<unsigned char>(base)] / static_cast<double>(profile_height);
+                    if (fraction > best_fraction) {
+                        best_fraction = fraction;
+                        best_base = base;
+                    }
+                }
+                if (best_fraction > MSA_MAJORITY) {
+                    consensus += best_base;
+                } else {
+                    consensus += 'N';
+                }
+                qual += consensus_quality_from_agreement(best_fraction);
+            }
+            ofastq << "@" << header.str() << '\n';
+            ofastq << consensus << '\n';
+            ofastq << '+' << '\n';
+            ofastq << qual << '\n';
 
-        omsa << "@" << header.str() << '\n';
-        omsa << consensus << '\n';
-        omsa << '+' << '\n';
-        for (const auto& it: msa) {
-            omsa << it << '\n';
+            omsa << "@" << header.str() << '\n';
+            omsa << consensus << '\n';
+            omsa << '+' << '\n';
+            for (const auto& it: msa) {
+                omsa << it << '\n';
+            }
         }
     }
 }
@@ -335,6 +377,7 @@ void run_consensus(){
         std::string o_filename_prefix = output_filenames[i];
 
         std::vector<std::string> read_to_sequence(read_count);
+        std::vector<std::string> read_to_quality(read_count);
         read_id_t rid = 0;
         try {
             CompressionType resolved_type = resolveCompression(fastq_compression, ifastq_filename);
@@ -344,8 +387,10 @@ void run_consensus(){
             while (fastq_reader.readRecord(record)) {
                 if (read_to_sequence.size() <= rid) {
                     read_to_sequence.resize(rid + 1);
+                    read_to_quality.resize(rid + 1);
                 }
                 read_to_sequence[rid] = record.sequence;
+                read_to_quality[rid] = record.quality;
                 rid++;
             }
         } catch (const std::exception& ex) {
@@ -354,7 +399,12 @@ void run_consensus(){
         }
         std::vector<std::thread> threads(thread_count);
         for (size_t thread_id = 0; thread_id < thread_count; thread_id++) {
-            threads[thread_id] = std::thread(process_clusters, std::ref(read_to_sequence), std::ref(cluster_to_reads), o_filename_prefix, thread_id);
+            threads[thread_id] = std::thread(process_clusters,
+                                            std::ref(read_to_sequence),
+                                            std::ref(read_to_quality),
+                                            std::ref(cluster_to_reads),
+                                            o_filename_prefix,
+                                            thread_id);
         }
         auto ofastq = TextWriter::create(o_filename_prefix + "fastq", output_compression);
         auto omsa = TextWriter::create(o_filename_prefix + "msa", output_compression);
