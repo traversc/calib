@@ -133,6 +133,7 @@ consensus/calib_cons:
 
 test: all
 	tests/format_test.sh
+	tests/consensus_smoke_test.sh
 
 $(EXECUTABLE): $(EXECUTABLE).cc $(OBJECTS) $(ZSTD_LIB) Makefile
 	$(CXX) $(OBJECTS) -O2 $< $(CXXFLAGS) $(LDFLAGS) $(LDLIBS) $(ZLIB_LIB) -o $@
@@ -140,10 +141,10 @@ $(EXECUTABLE): $(EXECUTABLE).cc $(OBJECTS) $(ZSTD_LIB) Makefile
 $(DEBUGGABLE): $(EXECUTABLE).cc $(DBG_OBJECTS) $(ZSTD_LIB) Makefile
 	$(CXX) $(DBG_OBJECTS) -g -O0 $< $(CXXFLAGS) $(LDFLAGS) $(LDLIBS) $(ZLIB_LIB) -o $@ -DGITINFO="\"$(GITINFO)\""
 
-%.o: %.cc Makefile
+%.o: %.cc Makefile | $(ZSTD_LIB)
 	$(CXX) $(CXXFLAGS) -O2 -c $< -o $@
 
-%.dbg: %.cc Makefile
+%.dbg: %.cc Makefile | $(ZSTD_LIB)
 	$(CXX) $(CXXFLAGS) -g -O0 -c $< -o $@
 
 $(ZSTD_LIB):
