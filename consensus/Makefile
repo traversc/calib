@@ -11,7 +11,7 @@ ZSTD_DIR?=../vendor/zstd
 ZSTD_LIB?=$(ZSTD_DIR)/lib/libzstd.a
 LDLIBS?=
 LDLIBS:=$(filter-out -lzstd,$(LDLIBS))
-LDLIBS+=-lzstd
+LDLIBS+=$(ZSTD_LIB)
 ZLIB_LIB?=-lz
 cc_args?= $(cc_flags)-std=c++11 -O3 -pthread -Ispoa_v1.1.3/include/ -I$(ZSTD_DIR)/lib -Lspoa_v1.1.3/build/lib/ -L$(ZSTD_DIR)/lib
 cmake_major:=$(shell $(CMAKE) --version | head -n1 | awk '{print $$3}' | cut -d. -f1)
