@@ -392,9 +392,12 @@ void output_clusters(){
             return record;
         };
 
+        const std::string cluster_extension = compressionTypeExtension(cluster_output_compression);
+        const std::string cluster_output_path = output_prefix + "cluster" + cluster_extension;
+
         if (!sort_clusters) {
             read_id_t current_read = 0;
-            auto cluster_writer = TextWriter::create(output_prefix + "cluster", cluster_output_compression);
+            auto cluster_writer = TextWriter::create(cluster_output_path, cluster_output_compression);
 
             while (true) {
                 bool has_first = fastq_reader_1.readRecord(record_1);
@@ -493,7 +496,7 @@ void output_clusters(){
         read_id_to_node_id_vector().swap(read_to_node_vector);
         node_id_to_cluster_id_vector().swap(node_to_cluster_vector);
 
-        cluster_writer = TextWriter::create(output_prefix + "cluster", cluster_output_compression);
+        cluster_writer = TextWriter::create(cluster_output_path, cluster_output_compression);
         for (size_t i = 0; i < temp_out_count; i++) {
             cout << "Processing file " << temp_out_names[i] << "\n";
             temp_out_files[i].close();

@@ -72,8 +72,8 @@ cmp -s "${TMP_DIR}/plain_plain.cluster" "${TMP_DIR}/gz_plain.cluster"
 cmp -s "${TMP_DIR}/plain_plain.cluster" "${TMP_DIR}/zst_plain.cluster"
 run_calib plain_gzip "${R1_PLAIN}" "${R2_PLAIN}" gzip
 run_calib plain_zstd "${R1_PLAIN}" "${R2_PLAIN}" zstd
-gzip -dc "${TMP_DIR}/plain_gzip.cluster" > "${TMP_DIR}/plain_gzip.cluster.txt"
-zstd --quiet -T1 -dc "${TMP_DIR}/plain_zstd.cluster" > "${TMP_DIR}/plain_zstd.cluster.txt"
+gzip -dc "${TMP_DIR}/plain_gzip.cluster.gz" > "${TMP_DIR}/plain_gzip.cluster.txt"
+zstd --quiet -T1 -dc "${TMP_DIR}/plain_zstd.cluster.zst" > "${TMP_DIR}/plain_zstd.cluster.txt"
 cmp -s "${TMP_DIR}/plain_plain.cluster" "${TMP_DIR}/plain_gzip.cluster.txt"
 cmp -s "${TMP_DIR}/plain_plain.cluster" "${TMP_DIR}/plain_zstd.cluster.txt"
 
@@ -104,10 +104,10 @@ cmp -s "${TMP_DIR}/plain_plain.R1.fastq" "${TMP_DIR}/zst_plain_in.R1.fastq"
 cmp -s "${TMP_DIR}/plain_plain.R2.fastq" "${TMP_DIR}/zst_plain_in.R2.fastq"
 run_cons plain_gzip_out "${R1_PLAIN}" "${R2_PLAIN}" "${TMP_DIR}/plain_plain.cluster" plain gzip
 run_cons plain_zstd_out "${R1_PLAIN}" "${R2_PLAIN}" "${TMP_DIR}/plain_plain.cluster" plain zstd
-gzip -dc "${TMP_DIR}/plain_gzip_out.R1.fastq" > "${TMP_DIR}/plain_gzip_out.R1.fastq.txt"
-gzip -dc "${TMP_DIR}/plain_gzip_out.R2.fastq" > "${TMP_DIR}/plain_gzip_out.R2.fastq.txt"
-zstd --quiet -T1 -dc "${TMP_DIR}/plain_zstd_out.R1.fastq" > "${TMP_DIR}/plain_zstd_out.R1.fastq.txt"
-zstd --quiet -T1 -dc "${TMP_DIR}/plain_zstd_out.R2.fastq" > "${TMP_DIR}/plain_zstd_out.R2.fastq.txt"
+gzip -dc "${TMP_DIR}/plain_gzip_out.R1.fastq.gz" > "${TMP_DIR}/plain_gzip_out.R1.fastq.txt"
+gzip -dc "${TMP_DIR}/plain_gzip_out.R2.fastq.gz" > "${TMP_DIR}/plain_gzip_out.R2.fastq.txt"
+zstd --quiet -T1 -dc "${TMP_DIR}/plain_zstd_out.R1.fastq.zst" > "${TMP_DIR}/plain_zstd_out.R1.fastq.txt"
+zstd --quiet -T1 -dc "${TMP_DIR}/plain_zstd_out.R2.fastq.zst" > "${TMP_DIR}/plain_zstd_out.R2.fastq.txt"
 cmp -s "${TMP_DIR}/plain_plain.R1.fastq" "${TMP_DIR}/plain_gzip_out.R1.fastq.txt"
 cmp -s "${TMP_DIR}/plain_plain.R2.fastq" "${TMP_DIR}/plain_gzip_out.R2.fastq.txt"
 cmp -s "${TMP_DIR}/plain_plain.R1.fastq" "${TMP_DIR}/plain_zstd_out.R1.fastq.txt"

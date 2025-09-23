@@ -167,6 +167,21 @@ std::string compressionTypeName(CompressionType type) {
     }
 }
 
+std::string compressionTypeExtension(CompressionType type) {
+    switch (type) {
+        case CompressionType::PLAIN:
+            return "";
+        case CompressionType::GZIP:
+            return ".gz";
+        case CompressionType::ZSTD:
+            return ".zst";
+        case CompressionType::AUTO:
+            return "";
+        default:
+            return "";
+    }
+}
+
 CompressionType resolveCompression(CompressionType requested, const std::string& path) {
     if (requested == CompressionType::AUTO) {
         return detectCompression(path);

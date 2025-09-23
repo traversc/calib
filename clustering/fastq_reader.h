@@ -12,6 +12,7 @@ enum class CompressionType {
 
 CompressionType detectCompression(const std::string& path);
 std::string compressionTypeName(CompressionType type);
+std::string compressionTypeExtension(CompressionType type);
 
 struct FastqRecord {
     std::string name;

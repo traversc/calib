@@ -373,8 +373,11 @@ void run_consensus(){
     for (int i = 0; i < fastq_filenames.size(); i++) {
         std::cout << "Reading fastq file: " << fastq_filenames[i] << '\n';
         std::string ifastq_filename = fastq_filenames[i];
-        std::cout << "Writing output files: " << output_filenames[i] << '\n';
         std::string o_filename_prefix = output_filenames[i];
+        const std::string output_extension = compressionTypeExtension(output_compression);
+        const std::string fastq_output_path = o_filename_prefix + "fastq" + output_extension;
+        const std::string msa_output_path = o_filename_prefix + "msa" + output_extension;
+        std::cout << "Writing output files: " << fastq_output_path << " and " << msa_output_path << '\n';
 
         std::vector<std::string> read_to_sequence(read_count);
         std::vector<std::string> read_to_quality(read_count);
@@ -406,8 +409,8 @@ void run_consensus(){
                                             o_filename_prefix,
                                             thread_id);
         }
-        auto ofastq = TextWriter::create(o_filename_prefix + "fastq", output_compression);
-        auto omsa = TextWriter::create(o_filename_prefix + "msa", output_compression);
+        auto ofastq = TextWriter::create(fastq_output_path, output_compression);
+        auto omsa = TextWriter::create(msa_output_path, output_compression);
         std::array<char, 1 << 15> copy_buffer{};
         auto append_file_to_writer = [&](const std::string& path, TextWriter& writer) {
             std::ifstream input(path, std::ios::binary);
