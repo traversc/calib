@@ -119,11 +119,10 @@ private:
             pending_.append(out_buffer_.data(), output.pos);
         }
 
-        if (ret == 0 && input_depleted_ && input_.pos == input_.size) {
-            stream_finished_ = true;
-        }
-        if (output.pos == 0 && input_depleted_ && input_.pos == input_.size) {
-            stream_finished_ = true;
+        if (input_depleted_ && input_.pos == input_.size) {
+            if (ret == 0 || output.pos == 0) {
+                stream_finished_ = true;
+            }
         }
     }
 

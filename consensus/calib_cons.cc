@@ -369,6 +369,7 @@ void run_consensus(){
         read_count++;
     }
 
+
     //Get read sequences from each FASTQ file, and pass it for MSA and output
     for (int i = 0; i < fastq_filenames.size(); i++) {
         std::cout << "Reading fastq file: " << fastq_filenames[i] << '\n';
